@@ -1,0 +1,11 @@
+{
+  "name": "opencode-idle-compact",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OpenCode 2 plugin that compacts a large idle session shortly before its prompt cache expires.",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "test": "node --test"
+  }
+}
