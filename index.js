@@ -14,25 +14,31 @@ const OVERRIDE_MS = Number(process.env.OPENCODE_IDLE_COMPACT_SECONDS) * 1000;
 const MIN_TOKENS =
 	Number(process.env.OPENCODE_IDLE_COMPACT_MIN_TOKENS) || 100_000;
 
-// Anthropic counts the lifetime from the start of the request that reads or
-// writes the cache, which is when `model.request` fires.
-function compactionDelay({ providerID, id }) {
+// Lifetimes that hold without any provider configuration. Anthropic counts the
+// lifetime from the start of the request that reads or writes the cache, which
+// is when `model.request` fires.
+function defaultMinutes(providerID, id) {
 	// Claude Code writes one-hour caches on a Claude subscription.
-	if (providerID === "claude-agent") return 55 * MINUTE;
-	// These two need `cache.ttl: 1h` in the provider or model options.
-	if (providerID === "anthropic") return 55 * MINUTE;
-	if (providerID === "amazon-bedrock" && id === "eu.anthropic.claude-haiku-5-5")
-		return 55 * MINUTE;
+	if (providerID === "claude-agent") return 55;
 	// OpenAI and Bedrock keep GPT-5.6 and later caches for at least 30 minutes.
-	if (providerID === "openai") return 25 * MINUTE;
+	if (providerID === "openai") return 25;
 	if (providerID === "amazon-bedrock" && id.includes("openai.gpt-6.1-"))
-		return 25 * MINUTE;
+		return 25;
 	// Vertex keeps Gemini implicit caches for about five to seven minutes, and
 	// misses about one request in seven at random. Keep-alive pings then cost
 	// more than they save, so compact while the cache is still warm.
-	if (providerID === "google-vertex" && id.startsWith("gemini-"))
-		return 4 * MINUTE;
+	if (providerID === "google-vertex" && id.startsWith("gemini-")) return 4;
 	return undefined;
+}
+
+// `idleMinutes` keys are "provider/model" or "provider", most specific first,
+// and win over the defaults; 0 turns compaction off for that key.
+function compactionDelay({ providerID, id }, idleMinutes) {
+	const minutes =
+		idleMinutes[`${providerID}/${id}`] ??
+		idleMinutes[providerID] ??
+		defaultMinutes(providerID, id);
+	return minutes ? minutes * MINUTE : undefined;
 }
 
 // A timer that fires this late slept through the TTL with the machine, so
@@ -46,6 +52,7 @@ export default {
 		// V1 passes a context with no session domain; this plugin is V2 only.
 		if (typeof ctx?.session?.hook !== "function") return;
 
+		const idleMinutes = ctx.options?.idleMinutes ?? {};
 		const sessions = new Map();
 		const stateFor = (sessionID) => {
 			if (!sessions.has(sessionID))
@@ -68,7 +75,7 @@ export default {
 			if (kind !== "primary") return;
 			const state = stateFor(sessionID);
 			clearTimeout(state.timer);
-			const cacheDelay = compactionDelay(model);
+			const cacheDelay = compactionDelay(model, idleMinutes);
 			if (cacheDelay === undefined) return;
 			const delay = OVERRIDE_MS || cacheDelay;
 			state.last = Date.now();
