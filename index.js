@@ -35,12 +35,6 @@ function compactionDelay({ providerID, id }) {
 	return undefined;
 }
 
-function idleDelay(model) {
-	const delay = compactionDelay(model);
-	if (delay === undefined) return undefined;
-	return OVERRIDE_MS || delay;
-}
-
 // A timer that fires this late slept through the TTL with the machine, so
 // the cache is already gone and compacting would only lose detail.
 const LATE_MS = 30_000;
@@ -74,8 +68,9 @@ export default {
 			if (kind !== "primary") return;
 			const state = stateFor(sessionID);
 			clearTimeout(state.timer);
-			const delay = idleDelay(model);
-			if (delay === undefined) return;
+			const cacheDelay = compactionDelay(model);
+			if (cacheDelay === undefined) return;
+			const delay = OVERRIDE_MS || cacheDelay;
 			state.last = Date.now();
 			state.timer = setTimeout(
 				() =>
