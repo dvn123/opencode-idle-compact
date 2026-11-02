@@ -4,18 +4,42 @@
 // the history at the cached rate, and the next turn starts from the short
 // summary instead of re-sending the whole history uncached.
 //
-// A provider keeps the cache for one TTL (five minutes here) after any model
-// request. OpenCode's `warming` setting sends keep-alive requests every four
-// minutes for a while after each turn, so this plugin counts every model
-// request, keep-alives included, and fires IDLE_MS after the last one: about
-// 45 seconds before the cache expires, either when warming stops or, with
-// warming off, after the last turn. IDLE_MS must stay above the warming
-// interval, or the plugin compacts sessions warming still keeps warm.
+// The plugin fires a fixed delay after the session's last primary request,
+// shortly before the cache expires. It only acts on models whose cache
+// lifetime is known; an unknown or best-effort cache may already be gone,
+// and compacting it then pays full price and loses detail.
 
-const IDLE_MS =
-	(Number(process.env.OPENCODE_IDLE_COMPACT_SECONDS) || 255) * 1000;
+const MINUTE = 60_000;
+const OVERRIDE_MS = Number(process.env.OPENCODE_IDLE_COMPACT_SECONDS) * 1000;
 const MIN_TOKENS =
 	Number(process.env.OPENCODE_IDLE_COMPACT_MIN_TOKENS) || 100_000;
+
+// Anthropic counts the lifetime from the start of the request that reads or
+// writes the cache, which is when `model.request` fires.
+function compactionDelay({ providerID, id }) {
+	// Claude Code writes one-hour caches on a Claude subscription.
+	if (providerID === "claude-agent") return 55 * MINUTE;
+	// These two need `cache.ttl: 1h` in the provider or model options.
+	if (providerID === "anthropic") return 55 * MINUTE;
+	if (providerID === "amazon-bedrock" && id === "eu.anthropic.claude-haiku-5-5")
+		return 55 * MINUTE;
+	// OpenAI and Bedrock keep GPT-5.6 and later caches for at least 30 minutes.
+	if (providerID === "openai") return 25 * MINUTE;
+	if (providerID === "amazon-bedrock" && id.includes("openai.gpt-6.1-"))
+		return 25 * MINUTE;
+	// Vertex keeps Gemini implicit caches for about five to seven minutes, and
+	// misses about one request in seven at random. Keep-alive pings then cost
+	// more than they save, so compact while the cache is still warm.
+	if (providerID === "google-vertex" && id.startsWith("gemini-"))
+		return 4 * MINUTE;
+	return undefined;
+}
+
+function idleDelay(model) {
+	const delay = compactionDelay(model);
+	if (delay === undefined) return undefined;
+	return OVERRIDE_MS || delay;
+}
 
 // A timer that fires this late slept through the TTL with the machine, so
 // the cache is already gone and compacting would only lose detail.
@@ -35,9 +59,9 @@ export default {
 			return sessions.get(sessionID);
 		};
 
-		const compactIfIdle = async (sessionID, state) => {
+		const compactIfIdle = async (sessionID, state, delay) => {
 			if (state.busy || state.tokens < MIN_TOKENS) return;
-			if (Date.now() - state.last > IDLE_MS + LATE_MS) return;
+			if (Date.now() - state.last > delay + LATE_MS) return;
 			const info = await ctx.session.get({ sessionID });
 			// Events are server-wide, but each directory runs its own instance.
 			if (info.parentID || info.location.directory !== ctx.location.directory)
@@ -45,17 +69,20 @@ export default {
 			await ctx.session.compact({ sessionID });
 		};
 
-		// Every request kind refreshes the cache: turns, keep-alives, compactions.
-		await ctx.session.hook("model.request", ({ sessionID }) => {
+		// Title and other side requests may run on another model with its own cache.
+		await ctx.session.hook("model.request", ({ sessionID, model, kind }) => {
+			if (kind !== "primary") return;
 			const state = stateFor(sessionID);
 			clearTimeout(state.timer);
+			const delay = idleDelay(model);
+			if (delay === undefined) return;
 			state.last = Date.now();
 			state.timer = setTimeout(
 				() =>
-					compactIfIdle(sessionID, state).catch((error) =>
+					compactIfIdle(sessionID, state, delay).catch((error) =>
 						console.warn(`idle-compact: ${sessionID}: ${error}`),
 					),
-				IDLE_MS,
+				delay,
 			);
 		});
 
