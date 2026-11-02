@@ -29,7 +29,7 @@ function fakeContext(sessions) {
 			}),
 			compact: async ({ sessionID }) => {
 				compacted.push(sessionID);
-				hooks["model.request"]({ sessionID, kind: "compaction" });
+				hooks["model.request"]({ sessionID, model: CLAUDE, kind: "compaction" });
 				emit("session.compaction.ended", { sessionID });
 			},
 		},
@@ -42,13 +42,18 @@ function fakeContext(sessions) {
 			},
 		},
 	};
-	const request = (sessionID) =>
-		hooks["model.request"]({ sessionID, kind: "primary" });
+	const request = (sessionID, model) =>
+		hooks["model.request"]({ sessionID, model, kind: "primary" });
 	return { ctx, emit, request, compacted };
 }
 
-test("compacts only large, idle, owned root sessions, once", async () => {
-	const prompts = { big: 2000, small: 500, busy: 2000, child: 2000, elsewhere: 2000 };
+const CLAUDE = { providerID: "anthropic", id: "claude-sonnet-5-5" };
+const GEMINI = { providerID: "google-vertex", id: "gemini-4-argon" };
+const FIREWORKS = { providerID: "fireworks-ai", id: "accounts/fireworks/models/glm-5p3" };
+const MODELS = { gemini: GEMINI, unknownCache: FIREWORKS };
+
+test("compacts only large, idle, owned root sessions with a known cache, once", async () => {
+	const prompts = { big: 2000, small: 500, busy: 2000, child: 2000, elsewhere: 2000, gemini: 2000, unknownCache: 2000 };
 	const { ctx, emit, request, compacted } = fakeContext({
 		child: { parentID: "big" },
 		elsewhere: { location: { directory: "/other" } },
@@ -57,7 +62,7 @@ test("compacts only large, idle, owned root sessions, once", async () => {
 
 	for (const [sessionID, input] of Object.entries(prompts)) {
 		emit("session.execution.started", { sessionID });
-		request(sessionID);
+		request(sessionID, MODELS[sessionID] ?? CLAUDE);
 		const tokens = { input, output: 0, reasoning: 0, cache: { read: 0, write: 0 } };
 		emit("session.step.ended", { sessionID, tokens });
 		if (sessionID !== "busy") emit("session.execution.succeeded", { sessionID });
@@ -65,5 +70,5 @@ test("compacts only large, idle, owned root sessions, once", async () => {
 	await sleep(400);
 	cleanup();
 
-	assert.deepEqual(compacted, ["big"]);
+	assert.deepEqual(compacted, ["big", "gemini"]);
 });
