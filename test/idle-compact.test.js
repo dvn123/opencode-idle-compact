@@ -8,7 +8,7 @@ const { default: plugin } = await import("../index.js");
 
 // A fake OpenCode 2 plugin context. `compact` behaves like the real one: the
 // summary request is itself a model request, and its end resets the prompt.
-function fakeContext(sessions) {
+function fakeContext(sessions, options) {
 	const hooks = {};
 	const queue = [];
 	let wake = () => {};
@@ -19,6 +19,7 @@ function fakeContext(sessions) {
 	const compacted = [];
 	const ctx = {
 		location: { directory: "/project" },
+		options,
 		session: {
 			hook: async (name, callback) => {
 				hooks[name] = callback;
@@ -48,16 +49,28 @@ function fakeContext(sessions) {
 }
 
 const CLAUDE = { providerID: "anthropic", id: "claude-sonnet-5-5" };
+const OPENAI = { providerID: "openai", id: "gpt-6.1" };
 const GEMINI = { providerID: "google-vertex", id: "gemini-4-argon" };
 const FIREWORKS = { providerID: "fireworks-ai", id: "accounts/fireworks/models/glm-5p3" };
-const MODELS = { gemini: GEMINI, unknownCache: FIREWORKS };
+const MODELS = { byDefault: OPENAI, turnedOff: GEMINI, unknownCache: FIREWORKS };
+// Anthropic has no default, and the model key turns off Gemini's default.
+const OPTIONS = { idleMinutes: { anthropic: 55, "google-vertex/gemini-4-argon": 0 } };
 
 test("compacts only large, idle, owned root sessions with a known cache, once", async () => {
-	const prompts = { big: 2000, small: 500, busy: 2000, child: 2000, elsewhere: 2000, gemini: 2000, unknownCache: 2000 };
-	const { ctx, emit, request, compacted } = fakeContext({
-		child: { parentID: "big" },
-		elsewhere: { location: { directory: "/other" } },
-	});
+	const prompts = {
+		big: 2000,
+		small: 500,
+		busy: 2000,
+		child: 2000,
+		elsewhere: 2000,
+		byDefault: 2000,
+		turnedOff: 2000,
+		unknownCache: 2000,
+	};
+	const { ctx, emit, request, compacted } = fakeContext(
+		{ child: { parentID: "big" }, elsewhere: { location: { directory: "/other" } } },
+		OPTIONS,
+	);
 	const cleanup = await plugin.setup(ctx);
 
 	for (const [sessionID, input] of Object.entries(prompts)) {
@@ -70,5 +83,5 @@ test("compacts only large, idle, owned root sessions with a known cache, once", 
 	await sleep(400);
 	cleanup();
 
-	assert.deepEqual(compacted, ["big", "gemini"]);
+	assert.deepEqual(compacted, ["big", "byDefault"]);
 });
