@@ -52,11 +52,11 @@ const CLAUDE = { providerID: "anthropic", id: "claude-sonnet-5-5" };
 const OPENAI = { providerID: "openai", id: "gpt-6.1" };
 const GEMINI = { providerID: "google-vertex", id: "gemini-4-argon" };
 const FIREWORKS = { providerID: "fireworks-ai", id: "accounts/fireworks/models/glm-5p3" };
-const MODELS = { byDefault: OPENAI, turnedOff: GEMINI, unknownCache: FIREWORKS };
-// Anthropic has no default, and the model key turns off Gemini's default.
-const OPTIONS = { idleMinutes: { anthropic: 55, "google-vertex/gemini-4-argon": 0 } };
+const MODELS = { byDefault: OPENAI, turnedOff: GEMINI, assumedHour: FIREWORKS };
+// The model key turns off Gemini's default.
+const OPTIONS = { idleMinutes: { "google-vertex/gemini-4-argon": 0 } };
 
-test("compacts only large, idle, owned root sessions with a known cache, once", async () => {
+test("compacts only large, idle, owned root sessions that are not turned off, once", async () => {
 	const prompts = {
 		big: 2000,
 		small: 500,
@@ -65,7 +65,7 @@ test("compacts only large, idle, owned root sessions with a known cache, once", 
 		elsewhere: 2000,
 		byDefault: 2000,
 		turnedOff: 2000,
-		unknownCache: 2000,
+		assumedHour: 2000,
 	};
 	const { ctx, emit, request, compacted } = fakeContext(
 		{ child: { parentID: "big" }, elsewhere: { location: { directory: "/other" } } },
@@ -83,5 +83,5 @@ test("compacts only large, idle, owned root sessions with a known cache, once", 
 	await sleep(400);
 	cleanup();
 
-	assert.deepEqual(compacted, ["big", "byDefault"]);
+	assert.deepEqual(compacted, ["big", "byDefault", "assumedHour"]);
 });

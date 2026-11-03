@@ -5,29 +5,37 @@
 // summary instead of re-sending the whole history uncached.
 //
 // The plugin fires a fixed delay after the session's last primary request,
-// shortly before the cache expires. It only acts on models whose cache
-// lifetime is known; an unknown or best-effort cache may already be gone,
-// and compacting it then pays full price and loses detail.
+// shortly before the cache expires. It assumes a one-hour cache unless the
+// model is known to keep it for less; configure the provider for a one-hour
+// cache, or give the model its own delay or 0, since compacting after the
+// cache is gone pays full price and loses detail.
 
 const MINUTE = 60_000;
 const OVERRIDE_MS = Number(process.env.OPENCODE_IDLE_COMPACT_SECONDS) * 1000;
 const MIN_TOKENS =
 	Number(process.env.OPENCODE_IDLE_COMPACT_MIN_TOKENS) || 100_000;
 
-// Lifetimes that hold without any provider configuration. Anthropic counts the
-// lifetime from the start of the request that reads or writes the cache, which
-// is when `model.request` fires.
-function defaultMinutes(providerID, id) {
-	// Claude Code writes one-hour caches on a Claude subscription.
-	if (providerID === "claude-agent") return 55;
-	// OpenAI and Bedrock keep GPT-5.6 and later caches for at least 30 minutes.
+// One-hour caches, such as Claude with `cache.ttl: 1h` or a Claude
+// subscription. Anthropic counts the lifetime from the start of the request
+// that reads or writes the cache, which is when `model.request` fires.
+const DEFAULT_MINUTES = 55;
+
+// Models whose cache is known to last less than an hour.
+function shorterMinutes(providerID, id) {
+	// OpenAI and Bedrock keep GPT-5.6 and later caches for 30 minutes; Bedrock
+	// GPT-6 and 6.1 probes hit at 28 idle minutes and missed at 35, on both
+	// Mantle and Converse.
 	if (providerID === "openai") return 25;
-	if (providerID === "amazon-bedrock" && id.includes("openai.gpt-6.1-"))
+	if (providerID === "amazon-bedrock" && /openai\.gpt-(5\.6|[6-9])/.test(id))
 		return 25;
 	// Vertex keeps Gemini implicit caches for about five to seven minutes, and
 	// misses about one request in seven at random. Keep-alive pings then cost
 	// more than they save, so compact while the cache is still warm.
 	if (providerID === "google-vertex" && id.startsWith("gemini-")) return 4;
+	// Vertex DeepSeek hits depend on the replica rather than age: a hit after
+	// six idle minutes, misses after four, and misses on some immediate
+	// re-sends. No delay finds the cache warm, so leave these sessions alone.
+	if (providerID === "google-vertex" && id.startsWith("deepseek-")) return 0;
 	return undefined;
 }
 
@@ -37,7 +45,8 @@ function compactionDelay({ providerID, id }, idleMinutes) {
 	const minutes =
 		idleMinutes[`${providerID}/${id}`] ??
 		idleMinutes[providerID] ??
-		defaultMinutes(providerID, id);
+		shorterMinutes(providerID, id) ??
+		DEFAULT_MINUTES;
 	return minutes ? minutes * MINUTE : undefined;
 }
 
