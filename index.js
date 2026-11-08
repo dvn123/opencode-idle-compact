@@ -53,9 +53,6 @@ export default {
   id: "idle-compact",
 
   async setup(ctx) {
-    // V1 passes a context with no session domain; this plugin is V2 only.
-    if (typeof ctx?.session?.hook !== "function") return;
-
     const idleMinutes = ctx.options?.idleMinutes ?? {};
     const sessions = new Map();
     const stateFor = (sessionID) => {
